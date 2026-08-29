@@ -45,7 +45,7 @@ translateBtn.addEventListener("click", async () => {
     outputText.textContent = result;
     outputText.classList.remove("placeholder");
   } catch (err) {
-    errorMsg.textContent = "Something went wrong. Please try again.";
+    errorMsg.textContent = "Error: " + err.message;
     errorMsg.style.display = "block";
     outputText.textContent = "Translation will appear here";
     outputText.classList.add("placeholder");
