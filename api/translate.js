@@ -14,7 +14,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    const sunbirdResponse = await fetch("https://api.sunbird.ai/tasks/nllb_translate", {
+    const sunbirdResponse = await fetch("https://api.sunbird.ai/tasks/translate", {
       method: "POST",
       headers: {
         "Authorization": "Bearer " + process.env.SUNBIRD_API_KEY,
