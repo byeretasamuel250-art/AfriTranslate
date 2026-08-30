@@ -69,9 +69,23 @@ export default async function handler(req, res) {
   try {
     // Sunbird's transcription endpoint expects the audio as a file upload
     // (multipart form), plus the language it was spoken in.
+    //
+    // IMPORTANT: Sunbird actually has TWO separate language fields -
+    // "language" AND "adapter" - and both default to Luganda ("lug") if
+    // left out. Sending only "language" (as an earlier version of this
+    // file did) meant "adapter" silently fell back to Luganda every time,
+    // which produced wrong-language transcriptions for every OTHER
+    // language, Runyankole included. Both must be set to match.
     const formData = new FormData();
     formData.append("audio", new Blob([audioBuffer], { type: "audio/webm" }), "recording.webm");
     formData.append("language", language);
+    formData.append("adapter", language);
+    formData.append("recognise_speakers", "false");
+    // whisper:false uses Sunbird's dedicated local-language model instead
+    // of a Whisper-based one. Whisper models are commonly run in a mode
+    // that translates speech INTO English rather than transcribing it in
+    // its original language, which is the "typing English" symptom.
+    formData.append("whisper", "false");
 
     const sunbirdResponse = await callSunbirdWithRetry("https://api.sunbird.ai/tasks/audio/transcriptions", {
       method: "POST",
