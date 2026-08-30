@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>AfriTranslate</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div class="app">
+  <h1>AfriTranslate</h1>
+  <p class="subtitle">Translate between African languages</p>
+
+  <div class="lang-row">
+    <select id="srcLang">
+      <option value="eng">English</option>
+      <option value="lug">Luganda</option>
+      <option value="swa">Swahili</option>
+      <option value="nyn">Runyankole</option>
+      <option value="kin">Kinyarwanda</option>
+      <option value="ach">Acholi</option>
+      <option value="teo">Ateso</option>
+      <option value="lgg">Lugbara</option>
+      <option value="xog">Lusoga</option>
+      <option value="ttj">Rutooro</option>
+      <option value="nyo">Runyoro</option>
+      <option value="cgg">Rukiga</option>
+      <option value="koo">Rukonjo</option>
+      <option value="myx">Lumasaba</option>
+      <option value="lsm">Samia</option>
+      <option value="nuj">Lunyole</option>
+      <option value="gwr">Lugwere</option>
+      <option value="rub">Lugungu</option>
+      <option value="ruc">Ruruuli</option>
+      <option value="mhi">Ma'di</option>
+      <option value="alz">Alur</option>
+      <option value="luc">Aringa</option>
+      <option value="adh">Jopadhola</option>
+      <option value="laj">Lango</option>
+      <option value="kdj">Karamojong</option>
+      <option value="pok">Pokot</option>
+      <option value="keo">Kakwa</option>
+      <option value="bfa">Bari</option>
+      <option value="kdi">Kumam</option>
+      <option value="kpz">Kupsabiny</option>
+      <option value="rwm">Kwamba</option>
+      <option value="tlj">Lubwisi</option>
+    </select>
+
+    <button id="swapBtn" title="Swap languages">&#8646;</button>
+
+    <select id="tgtLang">
+      <option value="lug">Luganda</option>
+      <option value="eng">English</option>
+      <option value="swa">Swahili</option>
+      <option value="nyn">Runyankole</option>
+      <option value="kin">Kinyarwanda</option>
+      <option value="ach">Acholi</option>
+      <option value="teo">Ateso</option>
+      <option value="lgg">Lugbara</option>
+      <option value="xog">Lusoga</option>
+      <option value="ttj">Rutooro</option>
+      <option value="nyo">Runyoro</option>
+      <option value="cgg">Rukiga</option>
+      <option value="koo">Rukonjo</option>
+      <option value="myx">Lumasaba</option>
+      <option value="lsm">Samia</option>
+      <option value="nuj">Lunyole</option>
+      <option value="gwr">Lugwere</option>
+      <option value="rub">Lugungu</option>
+      <option value="ruc">Ruruuli</option>
+      <option value="mhi">Ma'di</option>
+      <option value="alz">Alur</option>
+      <option value="luc">Aringa</option>
+      <option value="adh">Jopadhola</option>
+      <option value="laj">Lango</option>
+      <option value="kdj">Karamojong</option>
+      <option value="pok">Pokot</option>
+      <option value="keo">Kakwa</option>
+      <option value="bfa">Bari</option>
+      <option value="kdi">Kumam</option>
+      <option value="kpz">Kupsabiny</option>
+      <option value="rwm">Kwamba</option>
+      <option value="tlj">Lubwisi</option>
+    </select>
+  </div>
+
+  <div class="box">
+    <textarea id="inputText" rows="3" placeholder="Type or speak here..."></textarea>
+    <div class="box-actions">
+      <button id="photoBtn" title="Scan text from a photo">&#128248;</button>
+      <button id="micBtn" title="Speak">&#127908;</button>
+    </div>
+  </div>
+  <input type="file" id="photoInput" accept="image/*" capture="environment" style="display:none;">
+
+  <button id="translateBtn" class="primary-btn">Translate</button>
+  <p id="errorMsg" class="error"></p>
+
+  <div class="box output-box">
+    <p id="outputText" class="placeholder">Translation will appear here</p>
+    <span id="qualityLabel" class="quality-label" style="display:none;">Beta language - quality may vary</span>
+    <div class="box-actions">
+      <button id="copyBtn" title="Copy">&#128203;</button>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/5.0.4/tesseract.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
