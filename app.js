@@ -309,11 +309,19 @@ copyBtn.addEventListener("click", () => {
 });
 
 // Photo/document text capture (OCR)
-// NOTE: this reads text well from clear, printed ENGLISH. Handwriting,
-// blurry photos, and local-language text on paper will likely read
-// poorly or incorrectly - a real limitation of free OCR tools today,
-// same kind of gap we've hit with voice for local languages.
+// NOTE: Tesseract (the free OCR engine we use) only ships trained models
+// for English and Swahili out of our 32 languages - it has no model at
+// all for Luganda, Runyankole, Acholi, etc. Running those through the
+// English model just produces garbage, not a "sometimes works" result.
+// So instead of letting people photograph unsupported languages and get
+// a confusing failure afterward, we tell them upfront.
+const OCR_SUPPORTED_LANGS = { eng: "eng", swa: "swa" };
+
 photoBtn.addEventListener("click", () => {
+  if (!OCR_SUPPORTED_LANGS[srcLang.value]) {
+    showMessage("Photo capture works for English and Swahili text right now - try typing or voice instead.", 3500);
+    return;
+  }
   photoInput.click();
 });
 
@@ -345,20 +353,40 @@ function resizeImageForOCR(file, maxDimension = 2200) {
       const imageData = ctx.getImageData(0, 0, width, height);
       const pixels = imageData.data;
 
-      // Convert to grayscale first, tracking the darkest/lightest values
-      // actually present in this photo.
-      let min = 255, max = 0;
+      // Convert to grayscale first.
       const grayValues = new Uint8ClampedArray(pixels.length / 4);
       for (let i = 0, j = 0; i < pixels.length; i += 4, j++) {
-        const gray = pixels[i] * 0.3 + pixels[i + 1] * 0.59 + pixels[i + 2] * 0.11;
-        grayValues[j] = gray;
-        if (gray < min) min = gray;
-        if (gray > max) max = gray;
+        grayValues[j] = pixels[i] * 0.3 + pixels[i + 1] * 0.59 + pixels[i + 2] * 0.11;
       }
 
-      // Stretch that actual range to the full 0-255 spread, so faint
-      // text on a dim photo still gets real contrast - without forcing
-      // anything to a hard black/white cutoff.
+      // Find a robust min/max via a histogram, ignoring the darkest and
+      // brightest 1% of pixels. Real phone photos almost always have a
+      // few stray very-dark pixels (shadow, sensor noise) and very-bright
+      // pixels (a tiny reflection or glare spot) that have nothing to do
+      // with the actual text - using the true min/max let a couple of
+      // those outlier pixels set the range to ~255 every time, which
+      // silently made the contrast stretch below do almost nothing on
+      // real-world photos.
+      const histogram = new Uint32Array(256);
+      for (let j = 0; j < grayValues.length; j++) {
+        histogram[grayValues[j]]++;
+      }
+      const clipCount = grayValues.length * 0.01;
+      let min = 0, seen = 0;
+      for (let v = 0; v < 256; v++) {
+        seen += histogram[v];
+        if (seen > clipCount) { min = v; break; }
+      }
+      let max = 255;
+      seen = 0;
+      for (let v = 255; v >= 0; v--) {
+        seen += histogram[v];
+        if (seen > clipCount) { max = v; break; }
+      }
+
+      // Stretch that range to the full 0-255 spread, so faint text on a
+      // dim or unevenly lit photo gets real contrast. Uint8ClampedArray
+      // clamps out-of-range values automatically.
       const range = Math.max(max - min, 1);
       for (let i = 0, j = 0; i < pixels.length; i += 4, j++) {
         const stretched = ((grayValues[j] - min) / range) * 255;
@@ -376,29 +404,6 @@ function resizeImageForOCR(file, maxDimension = 2200) {
   });
 }
 
-// OCR often confuses similar-looking letters and digits (l/1, O/0, S/5,
-// B/8, g/9), especially in small or slightly blurry text. This fixes the
-// obvious cases: a digit sitting INSIDE a word full of letters is almost
-// always a misread letter, not an actual number. A standalone number
-// (like a price or date) is left alone.
-function fixOcrDigitConfusion(text) {
-  return text
-    .split(/(\s+)/)
-    .map((word) => {
-      const hasLetters = /[a-zA-Z]/.test(word);
-      const hasDigits = /[0-9]/.test(word);
-      if (!hasLetters || !hasDigits) return word; // leave pure numbers/words alone
-
-      return word
-        .replace(/0/g, "o")
-        .replace(/1/g, "l")
-        .replace(/5/g, "s")
-        .replace(/8/g, "B")
-        .replace(/9/g, "g");
-    })
-    .join("");
-}
-
 photoInput.addEventListener("change", async () => {
   const file = photoInput.files[0];
   if (!file) return;
@@ -409,27 +414,37 @@ photoInput.addEventListener("change", async () => {
   try {
     const resizedImage = await resizeImageForOCR(file);
 
+    // Use the Tesseract model that actually matches the selected language,
+    // instead of always forcing English (which is what silently broke
+    // Swahili captures before - the OCR engine has trained models for both).
+    const tesseractLang = OCR_SUPPORTED_LANGS[srcLang.value] || "eng";
+
     // If OCR takes longer than 25 seconds, stop waiting and show a
     // clear message instead of leaving the user staring at nothing.
-    const ocrPromise = Tesseract.recognize(resizedImage, "eng");
+    const ocrPromise = Tesseract.recognize(resizedImage, tesseractLang);
     const timeoutPromise = new Promise((_, reject) =>
       setTimeout(() => reject(new Error("TIMEOUT")), 30000)
     );
 
     const result = await Promise.race([ocrPromise, timeoutPromise]);
-    const rawText = result.data.text.trim();
-    const text = fixOcrDigitConfusion(rawText);
+    const text = result.data.text.trim();
     const confidence = result.data.confidence; // 0-100, how sure Tesseract is
 
     // Below this, results are usually garbled nonsense rather than real text -
-    // better to ask for a clearer photo than show broken text.
-    const MIN_CONFIDENCE = 60;
+    // better to ask for a clearer photo than show broken text. Kept fairly
+    // lenient because real handheld phone photos (slight angle, imperfect
+    // lighting) often score lower than a scanned document even when the
+    // text came through correctly - the word-shape check below catches
+    // actual gibberish that slips past this.
+    const MIN_CONFIDENCE = 45;
 
-    // A second, independent check: real sentences are mostly letters and
-    // spaces. Symbol-heavy gibberish can still score a high confidence from
-    // Tesseract, so this catches cases the confidence score alone misses.
-    const letterCount = (text.match(/[a-zA-Z\s]/g) || []).length;
-    const looksLikeRealText = text.length > 0 && (letterCount / text.length) > 0.75;
+    // A second, independent check: real sentences are mostly letters,
+    // digits, and spaces. Symbol-heavy gibberish can still score a high
+    // confidence from Tesseract, so this catches cases the confidence score
+    // alone misses. Digits are included here so prices, phone numbers, and
+    // dates aren't wrongly rejected as "not real text."
+    const validCharCount = (text.match(/[a-zA-Z0-9\s.,!?'-]/g) || []).length;
+    const looksLikeRealText = text.length > 0 && (validCharCount / text.length) > 0.75;
 
     if (!text || confidence < MIN_CONFIDENCE || !looksLikeRealText) {
       inputText.value = "";
