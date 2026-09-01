@@ -14,6 +14,16 @@ const micBtn = document.getElementById("micBtn");
 const copyBtn = document.getElementById("copyBtn");
 const qualityLabel = document.getElementById("qualityLabel");
 
+// Attaches the current Supabase session token to a request, so our own
+// backend (translate.js, speech-to-text.js) can verify this call is
+// coming from someone actually signed in, not just anyone who found the
+// URL. supabaseClient is defined in auth.js, loaded before this file.
+async function authHeaders() {
+  const { data } = await supabaseClient.auth.getSession();
+  const token = data.session ? data.session.access_token : null;
+  return token ? { "Authorization": "Bearer " + token } : {};
+}
+
 // Swap source and target languages
 swapBtn.addEventListener("click", () => {
   const temp = srcLang.value;
@@ -148,7 +158,7 @@ async function translateOneChunk(text, from, to) {
   // Our helper safely holds the API key and forwards the request.
   const response = await fetch("/api/translate", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...(await authHeaders()) },
     body: JSON.stringify({
       source_language: from,
       target_language: to,
@@ -314,7 +324,7 @@ async function startSunbirdVoiceInput(languageCode) {
     try {
       const response = await fetch("/api/speech-to-text", {
         method: "POST",
-        headers: { "X-Language": languageCode },
+        headers: { "X-Language": languageCode, ...(await authHeaders()) },
         body: audioBlob
       });
 
@@ -345,4 +355,3 @@ copyBtn.addEventListener("click", () => {
     navigator.clipboard.writeText(text);
   }
 });
-
