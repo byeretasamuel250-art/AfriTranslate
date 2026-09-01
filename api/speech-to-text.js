@@ -7,17 +7,43 @@
 // IMPORTANT: this endpoint expects raw audio bytes in the request body
 // (that's what app.js sends), not JSON - so we turn off Vercel's default
 // JSON body parser and read the raw bytes ourselves.
+import { createClient } from "@supabase/supabase-js";
+import { requireUser } from "./_lib/auth.js";
+
+// Server-side only, used just to verify who's calling this endpoint (see
+// requireUser) - this route doesn't otherwise touch the database.
+const supabase = createClient(
+  "https://ntuhsfipdqdfanxuosdn.supabase.co",
+  process.env.SUPABASE_SERVICE_ROLE_KEY
+);
+
 export const config = {
   api: {
     bodyParser: false
   }
 };
 
-// Reads the raw audio bytes out of the incoming request.
-function readRawBody(req) {
+// A generous but real ceiling on recorded audio size, so someone can't
+// bypass the browser and stream something huge straight at Sunbird on
+// our dime. A few minutes of webm voice recording is nowhere near this.
+const MAX_AUDIO_BYTES = 10 * 1024 * 1024; // 10 MB
+
+// Reads the raw audio bytes out of the incoming request, aborting early
+// if it grows past MAX_AUDIO_BYTES rather than buffering an unbounded
+// amount of data in memory first.
+function readRawBody(req, maxBytes) {
   return new Promise((resolve, reject) => {
     const chunks = [];
-    req.on("data", (chunk) => chunks.push(chunk));
+    let total = 0;
+    req.on("data", (chunk) => {
+      total += chunk.length;
+      if (total > maxBytes) {
+        reject(new Error("PAYLOAD_TOO_LARGE"));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
     req.on("end", () => resolve(Buffer.concat(chunks)));
     req.on("error", reject);
   });
@@ -52,6 +78,10 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: "Only POST requests allowed" });
   }
 
+  // Only signed-in AfriTranslate users can spend our Sunbird quota here.
+  const user = await requireUser(req, res, supabase);
+  if (!user) return; // requireUser has already sent the error response
+
   // app.js sends the language code as a custom header, not in a JSON body,
   // since the body itself is the raw audio recording.
   const language = req.headers["x-language"];
@@ -60,7 +90,15 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: "Missing X-Language header" });
   }
 
-  const audioBuffer = await readRawBody(req);
+  let audioBuffer;
+  try {
+    audioBuffer = await readRawBody(req, MAX_AUDIO_BYTES);
+  } catch (err) {
+    if (err.message === "PAYLOAD_TOO_LARGE") {
+      return res.status(413).json({ error: "That recording is too long - please try a shorter one." });
+    }
+    return res.status(400).json({ error: "Couldn't read the audio - please try again." });
+  }
 
   if (!audioBuffer.length) {
     return res.status(400).json({ error: "No audio received" });
