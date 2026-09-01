@@ -209,7 +209,25 @@ registerBtn.addEventListener("click", async () => {
   loginBtn.disabled = false;
 
   if (profileError) {
-    showAuthError("Registered, but couldn't save your name - please contact support.");
+    // The auth account above was already created at this point, even
+    // though saving the profile failed - so we sign that half-finished
+    // session back out rather than silently leaving the browser logged
+    // into an account with no profile row (which would otherwise show up
+    // as a broken "logged in but stuck" state on the next page load).
+    await supabaseClient.auth.signOut();
+
+    // Postgres code 23505 = unique_violation. This is the profiles.name
+    // unique constraint - it means someone else grabbed this exact name
+    // in the brief window between our earlier availability check and
+    // this insert (two people registering the same name at almost the
+    // same instant). It's rare, but when it happens the message should
+    // say so plainly rather than pointing them at support for something
+    // they can just fix themselves by picking a different name.
+    if (profileError.code === "23505") {
+      showAuthError("That name was just taken by someone else - please choose a different name.");
+    } else {
+      showAuthError("Registered, but couldn't save your name - please contact support.");
+    }
     return;
   }
 
