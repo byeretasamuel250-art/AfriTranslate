@@ -23,6 +23,112 @@
 
 import { createClient } from "@supabase/supabase-js";
 
+// --- Quality cross-check against Google Translate ---
+//
+// Sunbird is our primary translator - this never changes that. But since
+// Sunbird's own quality varies by language (and we've seen occasional bad
+// outputs reported), we optionally cross-check its answer against Google
+// Translate for the handful of languages Google also supports.
+//
+// IMPORTANT: this is a rough confidence signal, not a "which one is
+// correct" judge. Two valid translations can use completely different
+// words and phrasing, so disagreement does NOT necessarily mean Sunbird
+// is wrong - it just means the two engines chose different renderings,
+// which is worth a second look rather than blind trust either way.
+// We never silently swap in Google's answer; Sunbird's translation is
+// always what gets shown and cached. We only ever add a confidence
+// signal on top of it.
+//
+// Google's language codes differ from Sunbird's for a few of these, so
+// this maps Sunbird's code -> Google's code. Only languages confirmed to
+// be supported by BOTH services are listed. If a pair isn't in this map,
+// cross-checking is silently skipped and everything behaves exactly as
+// it did before - no behavior change for unsupported languages.
+const GOOGLE_LANG_MAP = {
+  eng: "en",
+  lug: "lg",
+  swa: "sw",
+  kin: "rw",
+  ach: "ach",
+  alz: "alz",
+  cgg: "cgg"
+};
+
+// Below this word-overlap ratio, we treat the two translations as
+// "disagreeing" rather than just differently-phrased. This is a coarse
+// heuristic (bag-of-words Jaccard similarity), not a real quality
+// measure - it's meant to catch big divergences, not nitpick phrasing.
+const AGREEMENT_THRESHOLD = 0.3;
+
+function tokenize(text) {
+  return text
+    .toLowerCase()
+    .replace(/[.,!?;:()"']/g, "")
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
+function jaccardSimilarity(textA, textB) {
+  const setA = new Set(tokenize(textA));
+  const setB = new Set(tokenize(textB));
+  if (setA.size === 0 || setB.size === 0) return 0;
+
+  let intersection = 0;
+  for (const word of setA) {
+    if (setB.has(word)) intersection++;
+  }
+  const union = setA.size + setB.size - intersection;
+  return union === 0 ? 0 : intersection / union;
+}
+
+// Calls Google's Cloud Translation (Basic/v2) API. Returns null on any
+// failure - a broken or missing cross-check should never block the main
+// Sunbird translation from reaching the user.
+async function getGoogleTranslation(text, sourceLanguage, targetLanguage) {
+  const googleSource = GOOGLE_LANG_MAP[sourceLanguage];
+  const googleTarget = GOOGLE_LANG_MAP[targetLanguage];
+
+  if (!googleSource || !googleTarget || !process.env.GOOGLE_TRANSLATE_API_KEY) {
+    return null;
+  }
+
+  try {
+    const url = "https://translation.googleapis.com/language/translate/v2?key=" + process.env.GOOGLE_TRANSLATE_API_KEY;
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        q: text,
+        source: googleSource,
+        target: googleTarget,
+        format: "text"
+      })
+    });
+
+    if (!response.ok) {
+      console.error("Google Translate cross-check failed:", await response.text());
+      return null;
+    }
+
+    const data = await response.json();
+    return data.data.translations[0].translatedText;
+  } catch (err) {
+    console.error("Google Translate cross-check error:", err.message);
+    return null;
+  }
+}
+
+// Logs disagreements to a shared Supabase table so they can be reviewed
+// later - this is how we actually find and fix the "sometimes wrong"
+// cases over time, instead of just guessing at them.
+async function logDisagreement(supabaseClient, entry) {
+  const { error } = await supabaseClient.from("translation_disagreements").insert(entry);
+  if (error) {
+    // Never let logging failures affect the user-facing translation.
+    console.error("Failed to log translation disagreement:", error.message);
+  }
+}
+
 // Server-side only. Uses the SECRET service role key (never the public
 // "publishable"/anon key auth.js uses), because this key can read and
 // write these tables directly, bypassing Row Level Security. It must
@@ -125,7 +231,9 @@ export default async function handler(req, res) {
     }
 
     if (cached) {
-      return res.status(200).json({ translated_text: cached.translated_text });
+      // Already served (and, if applicable, cross-checked) before -
+      // no confidence field needed on repeat hits.
+      return res.status(200).json({ translated_text: cached.translated_text, confidence: null });
     }
   } catch (err) {
     console.error("Cache read failed:", err.message);
@@ -140,16 +248,21 @@ export default async function handler(req, res) {
     });
   }
 
-  // --- 3. Call Sunbird ---
+  // --- 3. Call Sunbird (and, in parallel, Google if this pair supports
+  //        cross-checking - they're independent calls on the same source
+  //        text, so running them together avoids adding extra latency) ---
   try {
-    const sunbirdResponse = await callSunbirdWithRetry("https://api.sunbird.ai/tasks/translate", {
-      method: "POST",
-      headers: {
-        "Authorization": "Bearer " + process.env.SUNBIRD_API_KEY,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({ source_language, target_language, text })
-    });
+    const [sunbirdResponse, googleTranslation] = await Promise.all([
+      callSunbirdWithRetry("https://api.sunbird.ai/tasks/translate", {
+        method: "POST",
+        headers: {
+          "Authorization": "Bearer " + process.env.SUNBIRD_API_KEY,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ source_language, target_language, text })
+      }),
+      getGoogleTranslation(text, source_language, target_language)
+    ]);
 
     if (!sunbirdResponse.ok) {
       const errorText = await sunbirdResponse.text();
@@ -171,7 +284,31 @@ export default async function handler(req, res) {
       console.error("Cache write error:", cacheWriteError.message);
     }
 
-    return res.status(200).json({ translated_text: translatedText });
+    // --- 5. Compare against Google's result (already fetched above) ---
+    // Sunbird's answer is always what gets cached and shown as the
+    // actual translation. This only ever adds a confidence signal
+    // alongside it - it can flag uncertainty, it never overrides.
+    let confidence = null;
+
+    if (googleTranslation) {
+      const similarity = jaccardSimilarity(translatedText, googleTranslation);
+      const agrees = similarity >= AGREEMENT_THRESHOLD;
+      confidence = { cross_checked: true, agrees };
+
+      if (!agrees) {
+        // Fire-and-forget: don't make the user wait on a logging call.
+        logDisagreement(supabase, {
+          source_language,
+          target_language,
+          source_text: text,
+          sunbird_translation: translatedText,
+          google_translation: googleTranslation,
+          similarity
+        });
+      }
+    }
+
+    return res.status(200).json({ translated_text: translatedText, confidence });
 
   } catch (err) {
     return res.status(500).json({ error: "Server error: " + err.message });
