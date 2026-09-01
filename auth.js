@@ -1,10 +1,16 @@
 // Handles registration, login, logout, and password reset using Supabase
 // Auth. People sign in with just a NAME and a 6-character PASSWORD - the
 // email they give at registration is only ever used behind the scenes to
-// send a password-reset link. Supabase Auth itself needs a real email
-// internally, and a "profiles" table (set up separately in Supabase, see
-// supabase-setup.sql) lets us look up "what email goes with this name?"
-// for both login and password reset.
+// send a password-reset link.
+//
+// SECURITY NOTE: login and password-reset both need to turn a NAME into
+// an EMAIL somewhere, since Supabase Auth itself only understands email.
+// That lookup now happens entirely on our own server (/api/login and
+// /api/request-password-reset) rather than in the browser - the actual
+// email address is never sent back to this page. Only the registration
+// screen's "is this name already taken?" check still runs from here
+// directly, and it now calls a boolean-only check (name_is_taken) that
+// can't leak an email address either way.
 
 const SUPABASE_URL = "https://ntuhsfipdqdfanxuosdn.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_b8OQ4BmWzhHv29gMrOTU6g_RiWx4eIj";
@@ -127,17 +133,35 @@ function clearAuthError() {
   authError.style.display = "none";
 }
 
-// Looks up the real email behind a name via the get_email_for_name
-// database function (see supabase-setup.sql) - the app never has direct
-// read access to everyone's emails, only this one-name-at-a-time lookup.
-async function lookUpEmail(name) {
-  const { data, error } = await supabaseClient.rpc("get_email_for_name", { p_name: name });
-  if (error) return null;
-  return data || null;
+// Looks up whether a name is already taken - a boolean-only check, used
+// on the registration screen. Unlike the old get_email_for_name lookup,
+// this can never expose anyone's actual email address, so it's safe to
+// call directly from the browser.
+async function isNameTaken(name) {
+  const { data, error } = await supabaseClient.rpc("name_is_taken", { p_name: name });
+  if (error) return false; // fail open on a broken check - the server-side insert's unique constraint is the real backstop
+  return !!data;
 }
 
 function isValidEmail(email) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+}
+
+// Blocks the small set of 6-character passwords someone would guess in
+// one or two tries - repeated digits, straight runs, and the keyboard's
+// own top row. This doesn't add complexity requirements (people using
+// this app may not have a keyboard habit built around symbols/numbers),
+// it just closes off the handful of choices that make the "exactly 6
+// characters" design meaningfully weaker than it needs to be.
+const WEAK_PASSWORDS = new Set([
+  "000000", "111111", "222222", "333333", "444444",
+  "555555", "666666", "777777", "888888", "999999",
+  "123456", "654321", "121212", "112233", "qwerty", "abcdef",
+  "password"
+]);
+
+function isWeakPassword(password) {
+  return WEAK_PASSWORDS.has(password.toLowerCase());
 }
 
 // --- Switch between "Log In" and "Register" modes ---
@@ -168,13 +192,14 @@ registerBtn.addEventListener("click", async () => {
   if (!name) return showAuthError("Enter your name.");
   if (!isValidEmail(email)) return showAuthError("Enter a valid email address.");
   if (password.length !== 6) return showAuthError("Password must be exactly 6 characters.");
+  if (isWeakPassword(password)) return showAuthError("That password is too easy to guess - please choose another.");
 
   registerBtn.disabled = true;
   loginBtn.disabled = true;
 
   // Check the name isn't already taken before creating the account.
-  const existingEmail = await lookUpEmail(name);
-  if (existingEmail) {
+  const nameTaken = await isNameTaken(name);
+  if (nameTaken) {
     registerBtn.disabled = false;
     loginBtn.disabled = false;
     return showAuthError("That name is already taken - try logging in instead.");
@@ -251,23 +276,45 @@ loginBtn.addEventListener("click", async () => {
   loginBtn.disabled = true;
   registerBtn.disabled = true;
 
-  const email = await lookUpEmail(name);
-  if (!email) {
+  // The name-to-email lookup and password check both now happen on our
+  // own server (see api/login.js) - the browser only ever gets back
+  // session tokens, never the actual email address.
+  let response, data;
+  try {
+    response = await fetch("/api/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, password })
+    });
+    data = await response.json();
+  } catch (err) {
     loginBtn.disabled = false;
     registerBtn.disabled = false;
-    recordFailedLogin();
-    if (getLockUntil() <= Date.now()) showAuthError("Incorrect name or password.");
+    showAuthError("Couldn't reach the server - please try again.");
     return;
   }
-
-  const { error } = await supabaseClient.auth.signInWithPassword({ email, password });
 
   loginBtn.disabled = false;
   registerBtn.disabled = false;
 
-  if (error) {
+  if (!response.ok) {
     recordFailedLogin();
-    if (getLockUntil() <= Date.now()) showAuthError("Incorrect name or password.");
+    if (getLockUntil() <= Date.now()) {
+      showAuthError(response.status === 429 ? data.error : "Incorrect name or password.");
+    }
+    return;
+  }
+
+  // Apply the session tokens the server verified on our behalf, so this
+  // browser tab is now signed in exactly as if signInWithPassword had
+  // been called directly.
+  const { error: setSessionError } = await supabaseClient.auth.setSession({
+    access_token: data.access_token,
+    refresh_token: data.refresh_token
+  });
+
+  if (setSessionError) {
+    showAuthError("Couldn't complete sign-in - please try again.");
     return;
   }
 
@@ -308,29 +355,35 @@ sendResetBtn.addEventListener("click", async () => {
   }
 
   sendResetBtn.disabled = true;
-  const email = await lookUpEmail(name);
 
-  if (!email) {
+  // The name-to-email lookup and the actual reset email now both happen
+  // server-side (see api/request-password-reset.js) - this browser tab
+  // never learns the email address either way.
+  let response, data;
+  try {
+    response = await fetch("/api/request-password-reset", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name })
+    });
+    data = await response.json();
+  } catch (err) {
     sendResetBtn.disabled = false;
-    // Deliberately vague, same as a login failure - doesn't confirm or
-    // deny whether that name has an account.
-    forgotError.textContent = "If that name has an account, a reset link will be sent.";
+    forgotError.textContent = "Couldn't reach the server - please try again.";
     forgotError.style.display = "block";
     return;
   }
-
-  const { error } = await supabaseClient.auth.resetPasswordForEmail(email, {
-    redirectTo: window.location.origin
-  });
 
   sendResetBtn.disabled = false;
 
-  if (error) {
-    forgotError.textContent = "Couldn't send reset link - please try again.";
+  if (!response.ok) {
+    forgotError.textContent = data.error || "Couldn't send reset link - please try again.";
     forgotError.style.display = "block";
     return;
   }
 
+  // Same deliberately-vague message either way - doesn't confirm or deny
+  // whether that name has an account.
   forgotSuccess.style.display = "block";
 });
 
@@ -340,6 +393,12 @@ setNewPasswordBtn.addEventListener("click", async () => {
 
   if (newPassword.value.length !== 6) {
     resetError.textContent = "Password must be exactly 6 characters.";
+    resetError.style.display = "block";
+    return;
+  }
+
+  if (isWeakPassword(newPassword.value)) {
+    resetError.textContent = "That password is too easy to guess - please choose another.";
     resetError.style.display = "block";
     return;
   }
