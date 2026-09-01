@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Admin - AfriTranslate</title>
+<link rel="icon" type="image/svg+xml" href="logo.svg">
+<link rel="stylesheet" href="admin.css">
+</head>
+<body>
+
+<div class="admin-app">
+  <h1>AfriTranslate Admin</h1>
+
+  <div id="loadingMsg">Checking access...</div>
+  <div id="deniedMsg" style="display:none;">
+    You don't have access to this page. <a href="index.html">Back to AfriTranslate</a>
+  </div>
+
+  <div id="dashboard" style="display:none;">
+    <p class="subtitle"><span id="userCount">0</span> registered users</p>
+    <p id="errorMsg" class="error"></p>
+
+    <table id="usersTable">
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Email</th>
+          <th>Signed up</th>
+          <th>Last sign-in</th>
+          <th>Status</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="usersTableBody"></tbody>
+    </table>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.112.4/dist/umd/supabase.js" integrity="sha384-ysv13JVP3fufiEXfjML9OdCa/rRbMJvUBOWyor82wfuK8INNZAvmbxHgKIHi+oqz" crossorigin="anonymous"></script>
+<script src="auth.js"></script>
+<script src="admin.js"></script>
+</body>
+</html>
