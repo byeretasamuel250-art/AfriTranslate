@@ -222,7 +222,7 @@ export default async function handler(req, res) {
   try {
     const { data: cached, error: cacheReadError } = await supabase
       .from("translation_cache")
-      .select("translated_text")
+      .select("translated_text, cross_checked, agrees")
       .eq("cache_key", cacheKey)
       .maybeSingle();
 
@@ -231,9 +231,14 @@ export default async function handler(req, res) {
     }
 
     if (cached) {
-      // Already served (and, if applicable, cross-checked) before -
-      // no confidence field needed on repeat hits.
-      return res.status(200).json({ translated_text: cached.translated_text, confidence: null });
+      // Return whatever confidence signal was found the first time this
+      // text was translated (if any) - so a flagged disagreement stays
+      // visible to every subsequent person who hits the cache, not just
+      // the very first one who happened to trigger the live cross-check.
+      const confidence = cached.cross_checked
+        ? { cross_checked: true, agrees: cached.agrees }
+        : null;
+      return res.status(200).json({ translated_text: cached.translated_text, confidence });
     }
   } catch (err) {
     console.error("Cache read failed:", err.message);
@@ -275,16 +280,8 @@ export default async function handler(req, res) {
     const data = await sunbirdResponse.json();
     const translatedText = data.output.translated_text;
 
-    // --- 4. Save to the shared cache for next time ---
-    const { error: cacheWriteError } = await supabase
-      .from("translation_cache")
-      .upsert({ cache_key: cacheKey, translated_text: translatedText });
-
-    if (cacheWriteError) {
-      console.error("Cache write error:", cacheWriteError.message);
-    }
-
-    // --- 5. Compare against Google's result (already fetched above) ---
+    // --- 4. Compare against Google's result (already fetched above,
+    //        in parallel with Sunbird) ---
     // Sunbird's answer is always what gets cached and shown as the
     // actual translation. This only ever adds a confidence signal
     // alongside it - it can flag uncertainty, it never overrides.
@@ -306,6 +303,27 @@ export default async function handler(req, res) {
           similarity
         });
       }
+    }
+
+    // --- 5. Save to the shared cache for next time ---
+    // The cross-check result goes into the SAME row, in the SAME write,
+    // as the translation itself - not a separate write after the fact.
+    // That matters because this table is shared: if writing the
+    // confidence result were a second, later write, a concurrent reader
+    // could see the translated_text land first and read it with no
+    // confidence info yet, even though a cross-check was actually about
+    // to flag it. One write means one consistent row, always.
+    const { error: cacheWriteError } = await supabase
+      .from("translation_cache")
+      .upsert({
+        cache_key: cacheKey,
+        translated_text: translatedText,
+        cross_checked: confidence !== null,
+        agrees: confidence ? confidence.agrees : null
+      });
+
+    if (cacheWriteError) {
+      console.error("Cache write error:", cacheWriteError.message);
     }
 
     return res.status(200).json({ translated_text: translatedText, confidence });
