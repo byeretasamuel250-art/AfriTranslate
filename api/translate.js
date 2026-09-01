@@ -22,6 +22,7 @@
 // since the limit lives on their side.
 
 import { createClient } from "@supabase/supabase-js";
+import { requireUser } from "./_lib/auth.js";
 
 // --- Quality cross-check against Google Translate ---
 //
@@ -210,10 +211,26 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: "Only POST requests allowed" });
   }
 
+  // Only signed-in AfriTranslate users can spend our Sunbird/Google
+  // quota - this is what actually makes the cache/queue/rate-limit work
+  // above mean something, rather than being usable by anyone who finds
+  // this URL.
+  const user = await requireUser(req, res, supabase);
+  if (!user) return; // requireUser has already sent the error response
+
   const { text, source_language, target_language } = req.body;
 
   if (!text || !source_language || !target_language) {
     return res.status(400).json({ error: "Missing text, source_language, or target_language" });
+  }
+
+  // A generous but real ceiling. splitIntoChunks in the browser already
+  // keeps normal usage well under this - this exists purely to stop
+  // someone bypassing the browser entirely and sending something huge
+  // straight to the API.
+  const MAX_TEXT_LENGTH = 5000;
+  if (text.length > MAX_TEXT_LENGTH) {
+    return res.status(400).json({ error: "Text is too long to translate at once." });
   }
 
   const cacheKey = buildCacheKey(text, source_language, target_language);
