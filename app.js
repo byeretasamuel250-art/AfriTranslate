@@ -24,6 +24,102 @@ async function authHeaders() {
   return token ? { "Authorization": "Bearer " + token } : {};
 }
 
+// --- Subscription banner + payment ---
+const subBanner = document.getElementById("subBanner");
+const subBannerText = document.getElementById("subBannerText");
+const subBannerBtn = document.getElementById("subBannerBtn");
+const subModalOverlay = document.getElementById("subModalOverlay");
+const subModalError = document.getElementById("subModalError");
+const subModalConfirmBtn = document.getElementById("subModalConfirmBtn");
+const subModalCancelBtn = document.getElementById("subModalCancelBtn");
+
+function formatSubDate(isoString) {
+  return new Date(isoString).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+}
+
+// Checks the signed-in user's subscription and updates the banner at
+// the top of the app accordingly. Called once whenever the app screen
+// is shown (see the "app:shown" listener below) - not on a timer, since
+// this only needs to be fresh at the moments someone might act on it.
+async function refreshSubscriptionBanner() {
+  let response, data;
+  try {
+    response = await fetch("/api/subscription-status", { headers: await authHeaders() });
+    data = await response.json();
+  } catch (err) {
+    // If we can't reach the server, just hide the banner rather than
+    // showing something potentially wrong - the subscribe button is
+    // still reachable next time the app screen loads.
+    subBanner.style.display = "none";
+    return;
+  }
+
+  if (!response.ok) {
+    subBanner.style.display = "none";
+    return;
+  }
+
+  subBanner.style.display = "flex";
+  if (data.active) {
+    subBanner.classList.remove("sub-inactive");
+    subBannerText.textContent = "Premium until " + formatSubDate(data.current_period_end);
+    subBannerBtn.textContent = "Renew";
+  } else {
+    subBanner.classList.add("sub-inactive");
+    subBannerText.textContent = "Free plan";
+    subBannerBtn.textContent = "Subscribe";
+  }
+}
+
+document.addEventListener("app:shown", refreshSubscriptionBanner);
+
+function openSubModal() {
+  subModalError.style.display = "none";
+  subModalConfirmBtn.disabled = false;
+  subModalConfirmBtn.textContent = "Continue to Payment";
+  subModalOverlay.style.display = "flex";
+}
+
+function closeSubModal() {
+  subModalOverlay.style.display = "none";
+}
+
+subBannerBtn.addEventListener("click", openSubModal);
+subModalCancelBtn.addEventListener("click", closeSubModal);
+
+subModalConfirmBtn.addEventListener("click", async () => {
+  subModalError.style.display = "none";
+  subModalConfirmBtn.disabled = true;
+  subModalConfirmBtn.textContent = "Starting payment...";
+
+  let response, data;
+  try {
+    response = await fetch("/api/subscribe", {
+      method: "POST",
+      headers: await authHeaders()
+    });
+    data = await response.json();
+  } catch (err) {
+    subModalConfirmBtn.disabled = false;
+    subModalConfirmBtn.textContent = "Continue to Payment";
+    subModalError.textContent = "Couldn't reach the server - please try again.";
+    subModalError.style.display = "block";
+    return;
+  }
+
+  if (!response.ok || !data.redirect_url) {
+    subModalConfirmBtn.disabled = false;
+    subModalConfirmBtn.textContent = "Continue to Payment";
+    subModalError.textContent = data.error || "Couldn't start payment - please try again.";
+    subModalError.style.display = "block";
+    return;
+  }
+
+  // Send the browser to Pesapal's hosted payment page. They'll be
+  // brought back to subscription-callback.html once done.
+  window.location.href = data.redirect_url;
+});
+
 // Swap source and target languages
 swapBtn.addEventListener("click", () => {
   const temp = srcLang.value;
@@ -128,230 +224,3 @@ function splitIntoChunks(text, maxLength = 300) {
     } else {
       current = (current + " " + sentence).trim();
     }
-  }
-  if (current) chunks.push(current);
-
-  return chunks.length ? chunks : [text];
-}
-
-// Returns { text, confidence }. confidence is null when this chunk came
-// from the local cache, the offline phrasebook, or the server didn't
-// cross-check it - all of those mean "no fresh signal", not "disagreement".
-async function translateOneChunk(text, from, to) {
-  const cacheKey = "translate:" + from + ":" + to + ":" + text.toLowerCase().trim();
-  const cached = localStorage.getItem(cacheKey);
-  if (cached) {
-    return { text: cached, confidence: null };
-  }
-
-  // Silent offline check: if this exact phrase is in our built-in common
-  // phrases list, use that instantly - no network call, works even with
-  // no internet connection. Completely invisible to the user either way.
-  if (from === "eng") {
-    const offlineMatch = getOfflinePhrase(text, to);
-    if (offlineMatch) {
-      return { text: offlineMatch, confidence: null };
-    }
-  }
-
-  // This calls OUR OWN server helper (/api/translate), not Sunbird directly.
-  // Our helper safely holds the API key and forwards the request.
-  const response = await fetch("/api/translate", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-    body: JSON.stringify({
-      source_language: from,
-      target_language: to,
-      text: text
-    })
-  });
-
-  const data = await response.json();
-
-  if (!response.ok) {
-    if (response.status === 429) {
-      throw new Error("RATE_LIMITED");
-    }
-    throw new Error(data.error || "Translation request failed");
-  }
-
-  try {
-    localStorage.setItem(cacheKey, data.translated_text);
-  } catch (e) {
-    // Storage full or unavailable - not critical, just skip caching this one.
-  }
-
-  return { text: data.translated_text, confidence: data.confidence || null };
-}
-
-async function translateText(text, from, to) {
-  if (!SUNBIRD_LANGS.includes(from) || !SUNBIRD_LANGS.includes(to)) {
-    throw new Error("This language pair isn't connected yet.");
-  }
-
-  const chunks = splitIntoChunks(text);
-
-  // Short text (the normal case - a word or a sentence) is just one chunk,
-  // so this is no slower than before for typical use.
-  const translatedChunks = [];
-  let sawCrossCheck = false;
-  let allAgreed = true;
-
-  for (const chunk of chunks) {
-    const { text: chunkText, confidence } = await translateOneChunk(chunk, from, to);
-    translatedChunks.push(chunkText);
-
-    if (confidence && confidence.cross_checked) {
-      sawCrossCheck = true;
-      if (!confidence.agrees) {
-        allAgreed = false;
-      }
-    }
-  }
-
-  return {
-    text: translatedChunks.join(" "),
-    // If ANY chunk was cross-checked and disagreed, treat the whole
-    // translation as unconfirmed - one shaky sentence in a paragraph is
-    // still worth flagging.
-    confidence: sawCrossCheck ? { cross_checked: true, agrees: allAgreed } : null
-  };
-}
-
-// Voice input (mic button)
-// Two paths depending on language:
-// - English/Swahili: browser's free built-in voice recognition (instant, no server call)
-// - Local languages (Luganda, Runyankole, etc.): record real audio and send
-//   it to Sunbird's speech-to-text service, since browsers can't understand
-//   these languages on their own.
-const VOICE_INPUT_LANGS = { eng: "en-US", swa: "sw-KE" };
-
-const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-
-let recognition = null;
-let isListening = false;
-let finalTranscript = "";
-let mediaRecorder = null;
-let audioChunks = [];
-
-micBtn.addEventListener("click", () => {
-  // If already listening/recording, tapping the mic again stops it.
-  if (isListening) {
-    if (recognition) recognition.stop();
-    if (mediaRecorder) mediaRecorder.stop();
-    return;
-  }
-
-  const browserLangCode = VOICE_INPUT_LANGS[srcLang.value];
-
-  if (browserLangCode && SpeechRecognition) {
-    startBrowserVoiceInput(browserLangCode);
-  } else if (SUNBIRD_LANGS.includes(srcLang.value)) {
-    startSunbirdVoiceInput(srcLang.value);
-  } else {
-    showMessage("Voice input isn't available for this language yet - try typing instead.");
-  }
-});
-
-function startBrowserVoiceInput(langCode) {
-  errorMsg.style.display = "none";
-  recognition = new SpeechRecognition();
-  recognition.lang = langCode;
-  recognition.interimResults = true;
-  recognition.continuous = true;
-
-  finalTranscript = "";
-  inputText.value = "";
-  inputText.placeholder = "Listening... tap the mic again to stop";
-  isListening = true;
-  micBtn.classList.add("listening");
-
-  recognition.onresult = (event) => {
-    let interimTranscript = "";
-    for (let i = event.resultIndex; i < event.results.length; i++) {
-      if (event.results[i].isFinal) {
-        finalTranscript += event.results[i][0].transcript + " ";
-      } else {
-        interimTranscript += event.results[i][0].transcript;
-      }
-    }
-    inputText.value = finalTranscript + interimTranscript;
-  };
-
-  recognition.onerror = () => {
-    showMessage("Didn't catch that - please try again.");
-  };
-
-  recognition.onend = () => {
-    inputText.placeholder = "Type or speak here...";
-    isListening = false;
-    micBtn.classList.remove("listening");
-  };
-
-  recognition.start();
-}
-
-async function startSunbirdVoiceInput(languageCode) {
-  let stream;
-  try {
-    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-  } catch (err) {
-    showMessage("Couldn't access the microphone - check permissions.");
-    return;
-  }
-
-  audioChunks = [];
-  mediaRecorder = new MediaRecorder(stream);
-
-  mediaRecorder.ondataavailable = (event) => {
-    audioChunks.push(event.data);
-  };
-
-  mediaRecorder.onstop = async () => {
-    stream.getTracks().forEach((track) => track.stop());
-    isListening = false;
-    micBtn.classList.remove("listening");
-    inputText.placeholder = "Type or speak here...";
-
-    const audioBlob = new Blob(audioChunks, { type: "audio/webm" });
-
-    if (audioBlob.size === 0) {
-      return;
-    }
-
-    inputText.value = "Transcribing...";
-
-    try {
-      const response = await fetch("/api/speech-to-text", {
-        method: "POST",
-        headers: { "X-Language": languageCode, ...(await authHeaders()) },
-        body: audioBlob
-      });
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.error || "Transcription failed");
-      }
-
-      inputText.value = data.text;
-    } catch (err) {
-      inputText.value = "";
-      showMessage("Couldn't transcribe that - please try again.");
-    }
-  };
-
-  isListening = true;
-  micBtn.classList.add("listening");
-  inputText.value = "";
-  inputText.placeholder = "Recording... tap the mic again to stop";
-  mediaRecorder.start();
-}
-
-// Copy translated text to clipboard
-copyBtn.addEventListener("click", () => {
-  const text = outputText.textContent;
-  if (text && text !== "Translation will appear here") {
-    navigator.clipboard.writeText(text);
-  }
-});
