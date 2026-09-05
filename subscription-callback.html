@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AfriTranslate - Payment</title>
+<link rel="icon" type="image/svg+xml" href="logo.svg">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div class="app" style="text-align:center;">
+  <div class="header-row">
+    <img src="logo.svg" alt="AfriTranslate logo" class="logo">
+    <h1>AfriTranslate</h1>
+  </div>
+
+  <p id="statusText" class="subtitle">Checking your payment...</p>
+  <p id="statusDetail" style="font-size:13px;color:#6b6b6b;"></p>
+  <button id="continueBtn" class="primary-btn" style="display:none;">Continue to app</button>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.112.4/dist/umd/supabase.js" integrity="sha384-ysv13JVP3fufiEXfjML9OdCa/rRbMJvUBOWyor82wfuK8INNZAvmbxHgKIHi+oqz" crossorigin="anonymous"></script>
+<script>
+// This page is where Pesapal sends people back to after they pay (or
+// cancel). Pesapal's own callback carries NO payment status for
+// security reasons (see PesapalIVE docs) - it only tells us WHICH order
+// to look up. The real confirmation happens server-side, in
+// api/pesapal-ipn.js, which is what actually activates the
+// subscription. All this page does is poll our own
+// /api/subscription-status until that shows up, since the IPN can
+// arrive a few seconds after the browser lands back here.
+const SUPABASE_URL = "https://ntuhsfipdqdfanxuosdn.supabase.co";
+const SUPABASE_ANON_KEY = "sb_publishable_b8OQ4BmWzhHv29gMrOTU6g_RiWx4eIj";
+const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+const statusText = document.getElementById("statusText");
+const statusDetail = document.getElementById("statusDetail");
+const continueBtn = document.getElementById("continueBtn");
+
+continueBtn.addEventListener("click", () => {
+  window.location.href = "/index.html";
+});
+
+const params = new URLSearchParams(window.location.search);
+const merchantReference = params.get("OrderMerchantReference");
+
+function showDone(text, detail) {
+  statusText.textContent = text;
+  statusDetail.textContent = detail || "";
+  continueBtn.style.display = "block";
+}
+
+async function pollSubscriptionStatus(accessToken) {
+  const MAX_ATTEMPTS = 8;
+  const DELAY_MS = 2500;
+
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    let response, data;
+    try {
+      response = await fetch("/api/subscription-status", {
+        headers: { Authorization: "Bearer " + accessToken }
+      });
+      data = await response.json();
+    } catch (err) {
+      // Network hiccup - just try again on the next loop rather than
+      // giving up on the first failure.
+      await new Promise((resolve) => setTimeout(resolve, DELAY_MS));
+      continue;
+    }
+
+    if (response.ok && data.active) {
+      const until = new Date(data.current_period_end).toLocaleDateString(undefined, {
+        day: "numeric",
+        month: "short",
+        year: "numeric"
+      });
+      showDone("Payment confirmed!", "Your subscription is active until " + until + ".");
+      return;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, DELAY_MS));
+  }
+
+  // Still not active after ~20 seconds - not necessarily a failure
+  // (mobile money confirmations can be slow), just unresolved for now.
+  showDone(
+    "Still confirming your payment...",
+    "This can take a minute for mobile money. If it doesn't update, contact support - your reference is " +
+      (merchantReference || "not available") +
+      "."
+  );
+}
+
+(async () => {
+  const { data } = await supabaseClient.auth.getSession();
+  if (!data.session) {
+    showDone("Please log in", "Log in to AfriTranslate to see your updated subscription.");
+    return;
+  }
+  await pollSubscriptionStatus(data.session.access_token);
+})();
+</script>
+</body>
+</html>
