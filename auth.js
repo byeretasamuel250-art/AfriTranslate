@@ -433,6 +433,9 @@ function showApp() {
   forgotScreen.style.display = "none";
   resetScreen.style.display = "none";
   appScreen.style.display = "block";
+  // Lets app.js (loaded after this file) know it's safe to check
+  // subscription status now that appScreen - and its banner - is visible.
+  document.dispatchEvent(new CustomEvent("app:shown"));
 }
 
 function showAuthScreen() {
