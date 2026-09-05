@@ -28,6 +28,63 @@ export const config = {
 // our dime. A few minutes of webm voice recording is nowhere near this.
 const MAX_AUDIO_BYTES = 10 * 1024 * 1024; // 10 MB
 
+// --- Shared per-minute Sunbird rate limit ---
+//
+// This draws from the SAME per-minute counter that api/translate.js
+// (and api/text-to-speech.js) reserve slots from - see the longer
+// explanation in translate.js. All Sunbird-calling endpoints share one
+// budget because the real constraint, Sunbird's account-wide rate
+// limit, is shared too. Giving this endpoint its own separate 45/min
+// allowance on top of translate.js's would let the two together
+// overrun what Sunbird actually allows.
+//
+// Unlike translate.js, there's no cache step here first: two people's
+// recordings are essentially never identical, so every transcription
+// request needs a real Sunbird call - this queue is the only
+// protection this endpoint has against a burst of simultaneous voice
+// use.
+const SUNBIRD_LIMIT_PER_MINUTE = 45;
+
+// How long we're willing to make one user's request wait in the queue
+// before giving up and asking them to try again. Kept short because
+// Vercel functions have their own execution time limit.
+const MAX_QUEUE_WAIT_MS = 8000;
+const QUEUE_POLL_INTERVAL_MS = 1000;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Tries to reserve one of this minute's Sunbird call slots. If the
+// minute's budget is already full, waits a beat and tries again, up to
+// MAX_QUEUE_WAIT_MS total. Returns true once a slot is secured, or
+// false if we ran out of waiting time.
+async function waitForSunbirdSlot() {
+  const deadline = Date.now() + MAX_QUEUE_WAIT_MS;
+
+  while (Date.now() < deadline) {
+    const { data: gotSlot, error } = await supabase.rpc("reserve_sunbird_slot", {
+      limit_per_minute: SUNBIRD_LIMIT_PER_MINUTE
+    });
+
+    if (error) {
+      // If the queue itself is broken, don't trap every user behind it -
+      // let the request through and rely on Sunbird's own 429 handling
+      // as a fallback.
+      console.error("Rate limit check failed:", error.message);
+      return true;
+    }
+
+    if (gotSlot) {
+      return true;
+    }
+
+    await sleep(QUEUE_POLL_INTERVAL_MS);
+  }
+
+  return false;
+}
+
 // Reads the raw audio bytes out of the incoming request, aborting early
 // if it grows past MAX_AUDIO_BYTES rather than buffering an unbounded
 // amount of data in memory first.
@@ -102,6 +159,17 @@ export default async function handler(req, res) {
 
   if (!audioBuffer.length) {
     return res.status(400).json({ error: "No audio received" });
+  }
+
+  // Get in line for a shared Sunbird slot before spending a real call on
+  // transcription. This is what smooths out bursts of simultaneous
+  // voice use instead of everyone getting an immediate error the moment
+  // Sunbird's own limit is hit.
+  const gotSlot = await waitForSunbirdSlot();
+  if (!gotSlot) {
+    return res.status(429).json({
+      error: "Lots of people are transcribing right now - please try again in a moment."
+    });
   }
 
   try {
