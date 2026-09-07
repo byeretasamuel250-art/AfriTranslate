@@ -176,15 +176,27 @@ textarea {
 
 .peek-btn {
   position: absolute;
-  right: 6px;
+  right: 4px;
   top: 0;
-  bottom: 10px;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   background: none;
   border: none;
   cursor: pointer;
-  font-size: 16px;
-  padding: 0 6px;
+  padding: 0 8px;
   color: #6b6b6b;
+}
+
+.peek-btn:hover {
+  color: #1a1a1a;
+}
+
+.peek-btn svg {
+  width: 19px;
+  height: 19px;
+  display: block;
 }
 
 .secondary-btn {
