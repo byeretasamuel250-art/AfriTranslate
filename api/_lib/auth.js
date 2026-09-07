@@ -28,5 +28,39 @@ export async function requireUser(req, res, supabaseAdmin) {
     return null;
   }
 
+  // --- Single active session ---
+  // Only one device may be signed in at a time per account. Each
+  // successful login (see api/login.js) writes a fresh session_id into
+  // the active_sessions table and hands that id to the browser that just
+  // logged in. Every request after that must send the SAME session_id
+  // back (as the X-Session-Id header) - if someone logs in with the same
+  // shared name+password on a second device, THAT login overwrites the
+  // row with a new id, which immediately invalidates the first device's
+  // old id. This is what actually stops a shared password from letting
+  // two people use a paid account at once, rather than just relying on
+  // the honor system.
+  const sessionId = req.headers["x-session-id"] || "";
+
+  const { data: activeSession, error: sessionError } = await supabaseAdmin
+    .from("active_sessions")
+    .select("session_id")
+    .eq("user_id", data.user.id)
+    .maybeSingle();
+
+  if (sessionError) {
+    // If this check itself is broken, fail open rather than locking
+    // everyone out over an outage in a secondary feature.
+    console.error("Session check failed:", sessionError.message);
+    return data.user;
+  }
+
+  if (!activeSession || activeSession.session_id !== sessionId) {
+    res.status(401).json({
+      error: "This account was signed in on another device. Please sign in again.",
+      session_conflict: true
+    });
+    return null;
+  }
+
   return data.user;
 }
