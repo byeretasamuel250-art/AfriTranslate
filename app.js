@@ -24,10 +24,14 @@ async function authHeaders() {
   return token ? { "Authorization": "Bearer " + token } : {};
 }
 
-// --- Subscription banner + payment ---
+// --- Subscription paywall ---
 const subBanner = document.getElementById("subBanner");
 const subBannerText = document.getElementById("subBannerText");
 const subBannerBtn = document.getElementById("subBannerBtn");
+const paywallBlock = document.getElementById("paywallBlock");
+const paywallError = document.getElementById("paywallError");
+const paywallSubscribeBtn = document.getElementById("paywallSubscribeBtn");
+const translateFeature = document.getElementById("translateFeature");
 const subModalOverlay = document.getElementById("subModalOverlay");
 const subModalError = document.getElementById("subModalError");
 const subModalConfirmBtn = document.getElementById("subModalConfirmBtn");
@@ -37,41 +41,45 @@ function formatSubDate(isoString) {
   return new Date(isoString).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
 }
 
-// Checks the signed-in user's subscription and updates the banner at
-// the top of the app accordingly. Called once whenever the app screen
-// is shown (see the "app:shown" listener below) - not on a timer, since
-// this only needs to be fresh at the moments someone might act on it.
-async function refreshSubscriptionBanner() {
+// Checks the signed-in user's subscription and switches between showing
+// the translator (active subscribers) and a paywall block (everyone
+// else). Called once whenever the app screen is shown (see the
+// "app:shown" listener below).
+async function refreshSubscriptionAccess() {
   let response, data;
   try {
     response = await fetch("/api/subscription-status", { headers: await authHeaders() });
     data = await response.json();
   } catch (err) {
-    // If we can't reach the server, just hide the banner rather than
-    // showing something potentially wrong - the subscribe button is
-    // still reachable next time the app screen loads.
-    subBanner.style.display = "none";
+    // Can't reach the server - fail closed (show the paywall) rather
+    // than risk letting someone through who shouldn't be, or blocking
+    // someone who should - safest default is "can't confirm, so block".
+    showPaywall();
     return;
   }
 
   if (!response.ok) {
-    subBanner.style.display = "none";
+    showPaywall();
     return;
   }
 
-  subBanner.style.display = "flex";
   if (data.active) {
-    subBanner.classList.remove("sub-inactive");
+    translateFeature.style.display = "block";
+    paywallBlock.style.display = "none";
+    subBanner.style.display = "flex";
     subBannerText.textContent = "Premium until " + formatSubDate(data.current_period_end);
-    subBannerBtn.textContent = "Renew";
   } else {
-    subBanner.classList.add("sub-inactive");
-    subBannerText.textContent = "Free plan";
-    subBannerBtn.textContent = "Subscribe";
+    showPaywall();
   }
 }
 
-document.addEventListener("app:shown", refreshSubscriptionBanner);
+function showPaywall() {
+  translateFeature.style.display = "none";
+  paywallBlock.style.display = "block";
+  subBanner.style.display = "none";
+}
+
+document.addEventListener("app:shown", refreshSubscriptionAccess);
 
 function openSubModal() {
   subModalError.style.display = "none";
@@ -87,10 +95,8 @@ function closeSubModal() {
 subBannerBtn.addEventListener("click", openSubModal);
 subModalCancelBtn.addEventListener("click", closeSubModal);
 
-subModalConfirmBtn.addEventListener("click", async () => {
-  subModalError.style.display = "none";
-  subModalConfirmBtn.disabled = true;
-  subModalConfirmBtn.textContent = "Starting payment...";
+async function startSubscriptionPayment(errorEl) {
+  errorEl.style.display = "none";
 
   let response, data;
   try {
@@ -100,24 +106,41 @@ subModalConfirmBtn.addEventListener("click", async () => {
     });
     data = await response.json();
   } catch (err) {
-    subModalConfirmBtn.disabled = false;
-    subModalConfirmBtn.textContent = "Continue to Payment";
-    subModalError.textContent = "Couldn't reach the server - please try again.";
-    subModalError.style.display = "block";
-    return;
+    errorEl.textContent = "Couldn't reach the server - please try again.";
+    errorEl.style.display = "block";
+    return false;
   }
 
   if (!response.ok || !data.redirect_url) {
-    subModalConfirmBtn.disabled = false;
-    subModalConfirmBtn.textContent = "Continue to Payment";
-    subModalError.textContent = data.error || "Couldn't start payment - please try again.";
-    subModalError.style.display = "block";
-    return;
+    errorEl.textContent = data.error || "Couldn't start payment - please try again.";
+    errorEl.style.display = "block";
+    return false;
   }
 
   // Send the browser to Pesapal's hosted payment page. They'll be
   // brought back to subscription-callback.html once done.
   window.location.href = data.redirect_url;
+  return true;
+}
+
+paywallSubscribeBtn.addEventListener("click", async () => {
+  paywallSubscribeBtn.disabled = true;
+  paywallSubscribeBtn.textContent = "Starting payment...";
+  const started = await startSubscriptionPayment(paywallError);
+  if (!started) {
+    paywallSubscribeBtn.disabled = false;
+    paywallSubscribeBtn.textContent = "Subscribe Now";
+  }
+});
+
+subModalConfirmBtn.addEventListener("click", async () => {
+  subModalConfirmBtn.disabled = true;
+  subModalConfirmBtn.textContent = "Starting payment...";
+  const started = await startSubscriptionPayment(subModalError);
+  if (!started) {
+    subModalConfirmBtn.disabled = false;
+    subModalConfirmBtn.textContent = "Continue to Payment";
+  }
 });
 
 // Swap source and target languages
