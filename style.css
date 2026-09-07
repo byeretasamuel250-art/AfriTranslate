@@ -329,3 +329,8 @@ textarea {
   font-size: 13px;
   color: #6b6b6b;
 }
+
+.paywall-block {
+  max-width: none;
+  margin: 20px 0;
+}
