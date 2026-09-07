@@ -14,6 +14,7 @@
 // with Supabase Auth, and only the resulting SESSION TOKENS go back to
 // the browser - the email address itself never leaves this server.
 import { createClient } from "@supabase/supabase-js";
+import { randomUUID } from "crypto";
 
 const SUPABASE_URL = "https://ntuhsfipdqdfanxuosdn.supabase.co";
 // This is the public "publishable"/anon key - the same one auth.js uses
@@ -104,11 +105,31 @@ export default async function handler(req, res) {
     return genericError();
   }
 
-  // Hand back only the session tokens - the browser uses these to call
-  // supabaseClient.auth.setSession(...) and continue as normal. The
-  // email address itself was never included anywhere in this response.
+  // --- Single active session ---
+  // Overwrite this account's one allowed session with a brand-new id.
+  // This is what actually signs out any other device that was already
+  // logged in with this same shared name+password (see requireUser in
+  // _lib/auth.js, which rejects any request carrying the OLD id). Two
+  // people can still both type in the same password, but only the most
+  // recent one to log in can actually use the app.
+  const sessionId = randomUUID();
+  const { error: sessionError } = await supabaseAdmin
+    .from("active_sessions")
+    .upsert({ user_id: data.user.id, session_id: sessionId, updated_at: new Date().toISOString() });
+
+  if (sessionError) {
+    // Don't block a successful login over this secondary feature -
+    // just log it so it can be investigated.
+    console.error("Failed to record active session:", sessionError.message);
+  }
+
+  // Hand back the session tokens (used the same way as before) plus the
+  // new session_id, which the browser must now send back as X-Session-Id
+  // on every request to a protected endpoint. The email address itself
+  // was never included anywhere in this response.
   return res.status(200).json({
     access_token: data.session.access_token,
-    refresh_token: data.session.refresh_token
+    refresh_token: data.session.refresh_token,
+    session_id: sessionId
   });
 }
