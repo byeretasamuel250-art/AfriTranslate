@@ -51,10 +51,26 @@ export default async function handler(req, res) {
       return res.status(500).json({ error: "Couldn't load profile names." });
     }
 
+    // One row per user who has ever subscribed - same shape as what
+    // api/subscription-status.js uses to decide "active" for a single
+    // user, just fetched for everyone at once here.
+    const { data: subscriptions, error: subscriptionsError } = await supabaseAdmin
+      .from("subscriptions")
+      .select("user_id, status, current_period_end");
+
+    if (subscriptionsError) {
+      return res.status(500).json({ error: "Couldn't load subscription info." });
+    }
+
     const nameById = new Map((profiles || []).map((p) => [p.id, p]));
+    const subscriptionById = new Map((subscriptions || []).map((s) => [s.user_id, s]));
 
     const users = authUsers.map((u) => {
       const profile = nameById.get(u.id);
+      const subscription = subscriptionById.get(u.id);
+      const subscriptionActive =
+        !!subscription && subscription.status === "active" && new Date(subscription.current_period_end) > new Date();
+
       return {
         id: u.id,
         name: profile ? profile.name : null,
@@ -64,7 +80,12 @@ export default async function handler(req, res) {
         created_at: u.created_at,
         last_sign_in_at: u.last_sign_in_at,
         // Supabase marks a ban with a far-future banned_until timestamp.
-        banned: !!u.banned_until && new Date(u.banned_until) > new Date()
+        banned: !!u.banned_until && new Date(u.banned_until) > new Date(),
+        // Same "active" definition as api/subscription-status.js (the one
+        // that actually gates the paywall) - this dashboard reflects
+        // exactly what the user experiences, not a separate guess at it.
+        subscription_active: subscriptionActive,
+        subscription_period_end: subscription ? subscription.current_period_end : null
       };
     });
 
