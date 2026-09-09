@@ -94,18 +94,54 @@ export default async function handler(req, res) {
     const newStatus =
       transaction.status_code === 1 ? "COMPLETED" : transaction.status_code === 3 ? "REVERSED" : "FAILED";
 
-    // Only activate once per payment - if we've already marked this one
-    // COMPLETED (e.g. the callback page and the IPN both triggered a
-    // check), don't add a second week for the same single payment.
-    const alreadyCompleted = payment.status === "COMPLETED";
+    if (newStatus === "COMPLETED") {
+      // RACE CONDITION FIX: Pesapal and our own callback page can both
+      // trigger a status check for the same payment at nearly the same
+      // time (two overlapping requests to this handler). Reading
+      // payment.status earlier, then deciding "should I activate?"
+      // afterwards, leaves a window where BOTH requests read
+      // "not completed yet" before either one writes - so both would
+      // activate, adding two weeks for one payment.
+      //
+      // The fix: make "flip to COMPLETED" and "check it wasn't already
+      // COMPLETED" a single atomic database operation, by adding
+      // .neq("status", "COMPLETED") to the update itself. Postgres
+      // guarantees only ONE of two concurrent updates like this can
+      // actually match-and-write the row; the loser's update simply
+      // touches zero rows instead of racing on a separate read. Only
+      // the request whose update actually changed a row (`won.length > 0`)
+      // is allowed to activate the subscription.
+      const { data: won, error: updateError } = await supabase
+        .from("payments")
+        .update({ status: newStatus, order_tracking_id: orderTrackingId, updated_at: new Date().toISOString() })
+        .eq("id", payment.id)
+        .neq("status", "COMPLETED")
+        .select("id");
 
-    await supabase
-      .from("payments")
-      .update({ status: newStatus, order_tracking_id: orderTrackingId, updated_at: new Date().toISOString() })
-      .eq("id", payment.id);
+      if (updateError) {
+        console.error("Pesapal IPN payment update failed:", updateError.message);
+        return respond(500);
+      }
 
-    if (newStatus === "COMPLETED" && !alreadyCompleted) {
-      await activateSubscription(payment.user_id);
+      if (won && won.length > 0) {
+        await activateSubscription(payment.user_id);
+      }
+      // If won.length === 0, this payment was already marked COMPLETED
+      // by another request (or earlier call) - correctly do nothing more.
+    } else {
+      // FAILED / REVERSED: no "only once" race to worry about here (we
+      // never grant anything for these), so a plain update is fine -
+      // including the case where a completed payment later gets
+      // reversed and needs to move off COMPLETED.
+      const { error: updateError } = await supabase
+        .from("payments")
+        .update({ status: newStatus, order_tracking_id: orderTrackingId, updated_at: new Date().toISOString() })
+        .eq("id", payment.id);
+
+      if (updateError) {
+        console.error("Pesapal IPN payment update failed:", updateError.message);
+        return respond(500);
+      }
     }
 
     return respond(200);
