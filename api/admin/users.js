@@ -45,7 +45,7 @@ export default async function handler(req, res) {
     // Pull names in one query rather than one per user.
     const { data: profiles, error: profilesError } = await supabaseAdmin
       .from("profiles")
-      .select("id, name, is_admin");
+      .select("id, name, phone, is_admin");
 
     if (profilesError) {
       return res.status(500).json({ error: "Couldn't load profile names." });
@@ -58,6 +58,7 @@ export default async function handler(req, res) {
       return {
         id: u.id,
         name: profile ? profile.name : null,
+        phone: profile ? profile.phone : null,
         email: u.email,
         is_admin: profile ? !!profile.is_admin : false,
         created_at: u.created_at,
