@@ -273,6 +273,34 @@ registerBtn.addEventListener("click", async () => {
     return;
   }
 
+  // Establish this browser's single active session the same way a real
+  // login would (see api/login.js) - without this, the very next
+  // protected request (subscription-status, triggered by showApp()
+  // below) would find no active_sessions row for this brand-new account
+  // yet and incorrectly treat that as "signed in on another device",
+  // signing the person straight back out of the account they just made.
+  if (data.session) {
+    try {
+      const sessionResponse = await fetch("/api/establish-session", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": "Bearer " + data.session.access_token
+        }
+      });
+      const sessionData = await sessionResponse.json();
+      if (sessionResponse.ok && sessionData.session_id) {
+        localStorage.setItem("afriSessionId", sessionData.session_id);
+      }
+    } catch (err) {
+      // Don't block a successful registration over this - worst case,
+      // the next protected call gets treated as a session conflict and
+      // the person just has to log in again, rather than the account
+      // creation itself failing.
+      console.error("Failed to establish session after registration:", err);
+    }
+  }
+
   showApp();
 });
 
