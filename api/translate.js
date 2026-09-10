@@ -280,7 +280,7 @@ export default async function handler(req, res) {
   //        text, so running them together avoids adding extra latency) ---
   try {
     const [sunbirdResponse, googleTranslation] = await Promise.all([
-      callSunbirdWithRetry("https://api.sunbird.ai/tasks/translate", {
+      callSunbirdWithRetry("https://api.sunbird.ai/tasks/nllb_translate", {
         method: "POST",
         headers: {
           "Authorization": "Bearer " + process.env.SUNBIRD_API_KEY,
