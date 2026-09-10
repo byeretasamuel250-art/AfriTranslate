@@ -307,8 +307,12 @@ export default async function handler(req, res) {
   //        cross-checking - they're independent calls on the same source
   //        text, so running them together avoids adding extra latency) ---
   try {
+    // NOTE: Sunbird's actual translation endpoint is /tasks/nllb_translate
+    // (confirmed against Sunbird's own docs and tutorial), not
+    // /tasks/translate - an earlier version of this file called the
+    // wrong path, which meant every translation request went nowhere.
     const [sunbirdResponse, googleTranslation] = await Promise.all([
-      callSunbirdWithRetry("https://api.sunbird.ai/tasks/translate", {
+      callSunbirdWithRetry("https://api.sunbird.ai/tasks/nllb_translate", {
         method: "POST",
         headers: {
           "Authorization": "Bearer " + process.env.SUNBIRD_API_KEY,
@@ -328,7 +332,15 @@ export default async function handler(req, res) {
     }
 
     const data = await sunbirdResponse.json();
-    const translatedText = data.output.translated_text;
+    // Defensive: the exact response shape for /tasks/nllb_translate isn't
+    // empirically confirmed from our side, so check the most likely field
+    // names rather than assuming just one - same caution already applied
+    // to the speech-to-text response above.
+    const translatedText = (data.output && data.output.translated_text) || data.translated_text || data.text;
+
+    if (!translatedText) {
+      return res.status(502).json({ error: "Translation came back empty - please try again." });
+    }
 
     // --- 4. Compare against Google's result (already fetched above,
     //        in parallel with Sunbird) ---
