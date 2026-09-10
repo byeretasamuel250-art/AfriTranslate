@@ -1,6 +1,6 @@
 // Shared by every admin API route (api/admin/*.js).
 // Builds on requireUser: first confirms the request comes from a real,
-// signed-in AfriTranslate user, then checks that user's profiles row for
+// signed-in Afrischool user, then checks that user's profiles row for
 // is_admin = true. Only proceeds if both checks pass.
 import { requireUser } from "./auth.js";
 
