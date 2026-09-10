@@ -75,15 +75,37 @@ export default async function handler(req, res) {
     const token = await getAccessToken();
     const transaction = await getTransactionStatus(token, orderTrackingId);
 
-    // Find our own payment row. Prefer the merchant reference Pesapal
-    // just gave us; fall back to the order_tracking_id we saved back in
-    // subscribe.js, in case that field is ever missing from the call.
-    const reference = orderMerchantReference || transaction.merchant_reference;
-    const { data: payment } = await supabase
-      .from("payments")
-      .select("id, user_id, status")
-      .or(`merchant_reference.eq.${reference},order_tracking_id.eq.${orderTrackingId}`)
-      .maybeSingle();
+    // Find our own payment row. Trust transaction.merchant_reference (it
+    // came from Pesapal's own authenticated response to OUR request, via
+    // getTransactionStatus) over the raw orderMerchantReference query
+    // param, since the latter is attacker-controlled input on a route
+    // that - being an IPN endpoint - can't require a login to call it.
+    //
+    // Two separate .eq() lookups rather than a single .or() with a
+    // hand-built filter string: .or() takes a raw PostgREST filter
+    // string with no escaping, so interpolating request-derived values
+    // into it directly would let a crafted merchant reference break out
+    // of the intended filter and match an unrelated payment row. Plain
+    // .eq() calls are always parameterized safely by supabase-js.
+    const reference = transaction.merchant_reference || orderMerchantReference;
+
+    let payment = null;
+    {
+      const { data } = await supabase
+        .from("payments")
+        .select("id, user_id, status")
+        .eq("order_tracking_id", orderTrackingId)
+        .maybeSingle();
+      payment = data;
+    }
+    if (!payment && reference) {
+      const { data } = await supabase
+        .from("payments")
+        .select("id, user_id, status")
+        .eq("merchant_reference", reference)
+        .maybeSingle();
+      payment = data;
+    }
 
     if (!payment) {
       console.error("Pesapal IPN for unknown payment:", reference, orderTrackingId);
