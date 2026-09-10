@@ -1,7 +1,0 @@
-{
-  "functions": {
-    "api/translate.js": { "maxDuration": 60 },
-    "api/speech-to-text.js": { "maxDuration": 60 },
-    "api/text-to-speech.js": { "maxDuration": 60 }
-  }
-}
