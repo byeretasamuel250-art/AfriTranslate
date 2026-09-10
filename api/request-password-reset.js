@@ -57,11 +57,19 @@ export default async function handler(req, res) {
   const { data: email } = await supabaseAdmin.rpc("get_email_for_name", { p_name: name });
 
   if (email) {
-    const { error: resetError } = await supabaseAdmin.auth.resetPasswordForEmail(email, {
-      redirectTo: req.headers.origin || undefined
-    });
-    if (resetError) {
-      console.error("Password reset email failed to send:", resetError.message);
+    // redirectTo must be OUR known site URL, never something read off
+    // the incoming request (e.g. the Origin header) - that value is
+    // fully attacker-controlled, and using it here would let someone
+    // point a real password reset email at a domain of their choosing.
+    if (!process.env.SITE_URL) {
+      console.error("SITE_URL environment variable is not set - can't send password reset email");
+    } else {
+      const { error: resetError } = await supabaseAdmin.auth.resetPasswordForEmail(email, {
+        redirectTo: `${process.env.SITE_URL}/index.html`
+      });
+      if (resetError) {
+        console.error("Password reset email failed to send:", resetError.message);
+      }
     }
   }
 
