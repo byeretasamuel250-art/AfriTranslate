@@ -1,6 +1,6 @@
 // Shared by every protected API route (translate, speech-to-text,
 // text-to-speech). Verifies that the request came from someone with a
-// real, currently-valid AfriTranslate session - not just anyone who
+// real, currently-valid Afrischool session - not just anyone who
 // knows the endpoint URL.
 //
 // The browser sends its Supabase session token as a normal
