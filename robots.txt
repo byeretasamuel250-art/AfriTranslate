@@ -1,0 +1,7 @@
+User-agent: *
+Allow: /
+Disallow: /admin.html
+Disallow: /subscription-callback.html
+Disallow: /api/
+
+Sitemap: https://afri.school/sitemap.xml
