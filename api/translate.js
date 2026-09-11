@@ -22,7 +22,7 @@
 // since the limit lives on their side.
 
 import { createClient } from "@supabase/supabase-js";
-import { requireUser } from "./_lib/auth.js";
+import { requireActiveSubscription } from "./_lib/subscription.js";
 
 // --- Quality cross-check against Google Translate ---
 //
@@ -211,12 +211,14 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: "Only POST requests allowed" });
   }
 
-  // Only signed-in AfriTranslate users can spend our Sunbird/Google
-  // quota - this is what actually makes the cache/queue/rate-limit work
-  // above mean something, rather than being usable by anyone who finds
-  // this URL.
-  const user = await requireUser(req, res, supabase);
-  if (!user) return; // requireUser has already sent the error response
+  // Only signed-in users with an ACTIVE SUBSCRIPTION can spend our
+  // Sunbird/Google quota. Being merely signed in is not enough -
+  // translation is a paid feature, and this check is the only thing
+  // that actually enforces that server-side (the paywall in the
+  // browser UI is just a convenience; it doesn't stop a direct API
+  // call). See _lib/subscription.js for details.
+  const user = await requireActiveSubscription(req, res, supabase);
+  if (!user) return; // requireActiveSubscription has already sent the error response
 
   const { text, source_language, target_language } = req.body;
 
