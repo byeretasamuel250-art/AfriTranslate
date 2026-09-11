@@ -8,10 +8,10 @@
 // (that's what app.js sends), not JSON - so we turn off Vercel's default
 // JSON body parser and read the raw bytes ourselves.
 import { createClient } from "@supabase/supabase-js";
-import { requireUser } from "./_lib/auth.js";
+import { requireActiveSubscription } from "./_lib/subscription.js";
 
-// Server-side only, used just to verify who's calling this endpoint (see
-// requireUser) - this route doesn't otherwise touch the database.
+// Server-side only, used to verify who's calling this endpoint AND that
+// they have an active subscription (see requireActiveSubscription).
 const supabase = createClient(
   "https://ntuhsfipdqdfanxuosdn.supabase.co",
   process.env.SUPABASE_SERVICE_ROLE_KEY
@@ -135,9 +135,10 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: "Only POST requests allowed" });
   }
 
-  // Only signed-in AfriTranslate users can spend our Sunbird quota here.
-  const user = await requireUser(req, res, supabase);
-  if (!user) return; // requireUser has already sent the error response
+  // Only signed-in users with an ACTIVE SUBSCRIPTION can spend our
+  // Sunbird quota here - this is a paid feature (see _lib/subscription.js).
+  const user = await requireActiveSubscription(req, res, supabase);
+  if (!user) return; // requireActiveSubscription has already sent the error response
 
   // app.js sends the language code as a custom header, not in a JSON body,
   // since the body itself is the raw audio recording.
