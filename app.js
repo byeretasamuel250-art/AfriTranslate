@@ -373,6 +373,15 @@ const VOICE_INPUT_LANGS = { eng: "en-US", swa: "sw-KE" };
 
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 
+// The browser's own built-in voice recognition (used for eng/swa below)
+// is unreliable once the app is running as an installed/standalone app
+// - it often fails outright, even though it works fine in a normal
+// browser tab. When installed, we skip it and use the same reliable
+// server-based recording method already used for other languages.
+const isStandaloneApp =
+  window.matchMedia("(display-mode: standalone)").matches ||
+  window.navigator.standalone === true;
+
 let recognition = null;
 let isListening = false;
 let finalTranscript = "";
@@ -389,7 +398,7 @@ micBtn.addEventListener("click", () => {
 
   const browserLangCode = VOICE_INPUT_LANGS[srcLang.value];
 
-  if (browserLangCode && SpeechRecognition) {
+  if (browserLangCode && SpeechRecognition && !isStandaloneApp) {
     startBrowserVoiceInput(browserLangCode);
   } else if (SUNBIRD_LANGS.includes(srcLang.value)) {
     startSunbirdVoiceInput(srcLang.value);
