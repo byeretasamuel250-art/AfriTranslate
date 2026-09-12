@@ -455,7 +455,31 @@ async function startSunbirdVoiceInput(languageCode) {
   }
 
   audioChunks = [];
-  mediaRecorder = new MediaRecorder(stream);
+
+  // Ask for a specific, known-good format instead of leaving it to the
+  // browser's default - different browser contexts (e.g. a regular tab
+  // vs. an installed/standalone app) can silently default to different
+  // codecs, and we were previously always labeling the result as
+  // "audio/webm" even when it wasn't actually recorded that way. That
+  // mismatch is a likely cause of Sunbird failing to find any speech.
+  const preferredMimeTypes = [
+    "audio/webm;codecs=opus",
+    "audio/webm",
+    "audio/ogg;codecs=opus",
+    "audio/mp4"
+  ];
+  const supportedMimeType = preferredMimeTypes.find((type) =>
+    MediaRecorder.isTypeSupported(type)
+  );
+
+  mediaRecorder = supportedMimeType
+    ? new MediaRecorder(stream, { mimeType: supportedMimeType })
+    : new MediaRecorder(stream);
+
+  // Whatever MediaRecorder actually ends up using (may differ slightly
+  // from what we asked for) - use THIS, not a hardcoded guess, when we
+  // label and send the recording below.
+  const actualMimeType = mediaRecorder.mimeType || "audio/webm";
 
   mediaRecorder.ondataavailable = (event) => {
     audioChunks.push(event.data);
@@ -467,18 +491,26 @@ async function startSunbirdVoiceInput(languageCode) {
     micBtn.classList.remove("listening");
     inputText.placeholder = "Type or speak here...";
 
-    const audioBlob = new Blob(audioChunks, { type: "audio/webm" });
+    const audioBlob = new Blob(audioChunks, { type: actualMimeType });
 
     if (audioBlob.size === 0) {
       return;
     }
 
-    inputText.value = "Transcribing...";
+    // TEMPORARY: show exactly what was captured, so we can tell whether
+    // the recording itself is the problem (very small/near-zero size)
+    // or something later in the pipeline. Remove once diagnosed.
+    console.log("Recorded:", audioBlob.size, "bytes,", actualMimeType);
+    inputText.value = "Transcribing... (" + Math.round(audioBlob.size / 1024) + " KB, " + actualMimeType + ")";
 
     try {
       const response = await fetch("/api/speech-to-text", {
         method: "POST",
-        headers: { "X-Language": languageCode, ...(await authHeaders()) },
+        headers: {
+          "X-Language": languageCode,
+          "X-Audio-Type": actualMimeType,
+          ...(await authHeaders())
+        },
         body: audioBlob
       });
 
