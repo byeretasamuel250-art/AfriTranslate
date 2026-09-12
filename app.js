@@ -371,15 +371,6 @@ async function translateText(text, from, to) {
 //   these languages on their own.
 const VOICE_INPUT_LANGS = { eng: "en-US", swa: "sw-KE" };
 
-// The browser's own built-in voice recognition (used for eng/swa below)
-// is unreliable once the app is running as an installed/standalone app
-// - it often fails outright, even though it works fine in a normal
-// browser tab. When installed, we skip it and use the same reliable
-// server-based recording method already used for other languages.
-const isStandaloneApp =
-  window.matchMedia("(display-mode: standalone)").matches ||
-  window.navigator.standalone === true;
-
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 
 let recognition = null;
@@ -398,7 +389,7 @@ micBtn.addEventListener("click", () => {
 
   const browserLangCode = VOICE_INPUT_LANGS[srcLang.value];
 
-  if (browserLangCode && SpeechRecognition && !isStandaloneApp) {
+  if (browserLangCode && SpeechRecognition) {
     startBrowserVoiceInput(browserLangCode);
   } else if (SUNBIRD_LANGS.includes(srcLang.value)) {
     startSunbirdVoiceInput(srcLang.value);
@@ -500,7 +491,11 @@ async function startSunbirdVoiceInput(languageCode) {
       inputText.value = data.text;
     } catch (err) {
       inputText.value = "";
-      showMessage("Couldn't transcribe that - please try again.");
+      // TEMPORARY: showing the real error message here (instead of a
+      // generic one) so we can see exactly what's failing on your
+      // phone. We'll put the friendly generic message back once this
+      // is diagnosed.
+      showMessage("Couldn't transcribe: " + err.message);
     }
   };
 
