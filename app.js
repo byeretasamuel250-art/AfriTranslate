@@ -66,6 +66,11 @@ async function refreshSubscriptionAccess() {
 
   if (!response.ok) {
     showPaywall();
+    // TEMPORARY DEBUG: show exactly what the server said instead of
+    // silently showing the generic paywall, so the real cause (401 vs
+    // 500, and the error text) can be read straight off the screen.
+    // Remove this line once the underlying issue is found and fixed.
+    paywallError.textContent = "DEBUG: status " + response.status + " - " + (data && data.error ? data.error : "(no error message)");
     return;
   }
 
