@@ -439,8 +439,12 @@ function isSessionConflict(response, data) {
 // --- Log out ---
 logoutBtn.addEventListener("click", async () => {
   localStorage.removeItem("afriSessionId");
-  await supabaseClient.auth.signOut();
+  // Show the login screen right away - the person already decided to log
+  // out and their local session id is already cleared, so there's no
+  // reason to make them wait on a round-trip to Supabase first. The
+  // sign-out call still happens, just without blocking the screen change.
   showAuthScreen();
+  await supabaseClient.auth.signOut();
 });
 
 // --- Forgot password ---
