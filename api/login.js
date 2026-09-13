@@ -73,16 +73,19 @@ export default async function handler(req, res) {
   const windowBucket = Math.floor(Date.now() / (WINDOW_MINUTES * 60 * 1000));
   const windowKey = "login:" + ip + ":" + windowBucket;
 
-  const allowed = await withinRateLimit(windowKey);
+  // These two don't depend on each other, so run them at the same time
+  // instead of one after another - cuts one full network round-trip off
+  // the critical path.
+  const [allowed, lookupResult] = await Promise.all([
+    withinRateLimit(windowKey),
+    supabaseAdmin.rpc("get_email_for_name", { p_name: name })
+  ]);
+
   if (!allowed) {
     return res.status(429).json({ error: "Too many attempts - please wait a few minutes and try again." });
   }
 
-  // Look up the email for this name. This uses the SAME database
-  // function as before (get_email_for_name), but now it's only ever
-  // called from here, server-side, with the service role key - the
-  // email it returns never gets forwarded to the client.
-  const { data: email, error: lookupError } = await supabaseAdmin.rpc("get_email_for_name", { p_name: name });
+  const { data: email, error: lookupError } = lookupResult;
 
   // Deliberately identical error whether the name doesn't exist or the
   // password is wrong - same principle as the existing forgot-password
@@ -113,6 +116,22 @@ export default async function handler(req, res) {
   // people can still both type in the same password, but only the most
   // recent one to log in can actually use the app.
   const sessionId = randomUUID();
+
+  // Hand back the session tokens (used the same way as before) plus the
+  // new session_id, which the browser must now send back as X-Session-Id
+  // on every request to a protected endpoint. The email address itself
+  // was never included anywhere in this response.
+  //
+  // This is sent BEFORE the active_sessions write below finishes. The
+  // browser only cares about getting its tokens back quickly; recording
+  // the session is bookkeeping that can finish a moment later without
+  // the person waiting on it.
+  res.status(200).json({
+    access_token: data.session.access_token,
+    refresh_token: data.session.refresh_token,
+    session_id: sessionId
+  });
+
   const { error: sessionError } = await supabaseAdmin
     .from("active_sessions")
     .upsert({ user_id: data.user.id, session_id: sessionId, updated_at: new Date().toISOString() });
@@ -122,14 +141,4 @@ export default async function handler(req, res) {
     // just log it so it can be investigated.
     console.error("Failed to record active session:", sessionError.message);
   }
-
-  // Hand back the session tokens (used the same way as before) plus the
-  // new session_id, which the browser must now send back as X-Session-Id
-  // on every request to a protected endpoint. The email address itself
-  // was never included anywhere in this response.
-  return res.status(200).json({
-    access_token: data.session.access_token,
-    refresh_token: data.session.refresh_token,
-    session_id: sessionId
-  });
 }
